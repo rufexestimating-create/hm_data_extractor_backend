@@ -1,0 +1,24 @@
+# secrets — never commit real credentials
+.env
+.env.local
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# data / output
+output/
+_backup_2026-11-23/
+
+# the frontend is tracked in its own repository
+frontend/
+
+# os / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
