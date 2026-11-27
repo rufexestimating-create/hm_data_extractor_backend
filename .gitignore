@@ -1,0 +1,17 @@
+# Sensitive
+.env
+
+# Frontend (has its own repo)
+frontend/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Output & backups
+output/
+_backup_*/
+
+# Misc
+*.log
