@@ -100,7 +100,8 @@ def _backup_name(url: str) -> str:
 
 @app.post("/api/auth/signup")
 async def signup(req: SignupRequest, request: Request):
-    user_auth.check_signup_rate(request.client.host if request.client else "unknown")
+    ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else "unknown")
+    user_auth.check_signup_rate(ip)
     user_auth.validate_signup(req.name, req.email, req.password)
     return {"message": "Validation passed"}
 
@@ -555,7 +556,11 @@ async def _profiles_stage(fetcher, cards, list_url, fast, chrome):
         job.progress = 15 + 55 * done_count / max(total, 1)
 
     if need:
-        await asyncio.gather(*(work(c) for c in need))
+        sem = asyncio.Semaphore(config.CONCURRENT_WORKERS)
+        async def limited(c):
+            async with sem:
+                await work(c)
+        await asyncio.gather(*(limited(c) for c in need))
 
 
 def _save_results(url: str):

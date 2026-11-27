@@ -11,7 +11,7 @@ from fastapi import HTTPException, Request
 
 import supabase_db
 
-_TOKEN_TTL = 60
+_TOKEN_TTL = 300
 _token_cache: dict[str, tuple[float, dict]] = {}
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$")
