@@ -45,6 +45,7 @@ class ExtractionRequest(BaseModel):
     url: str
     fast: bool = True
     max_pages: int | None = None
+    start_page: int | None = None
 
 
 class SignupRequest(BaseModel):
@@ -192,6 +193,12 @@ async def start_extraction(req: ExtractionRequest, user: dict = Depends(current_
     if job.status == "running":
         raise HTTPException(400, "Extraction already running")
 
+    start_page = req.start_page or 1
+    if start_page < 1:
+        start_page = 1
+    if req.max_pages and start_page > req.max_pages:
+        raise HTTPException(400, "Start page must be less than or equal to end page.")
+
     job.logs.clear()
     job.results.clear()
     job.stats.clear()
@@ -201,7 +208,7 @@ async def start_extraction(req: ExtractionRequest, user: dict = Depends(current_
     job.batch_id = supabase_db.generate_batch_id()
     job.fast = req.fast
 
-    asyncio.create_task(_run_extraction(job, req.url, req.fast, req.max_pages))
+    asyncio.create_task(_run_extraction(job, req.url, req.fast, req.max_pages, start_page))
     return {"message": "Extraction started", "url": req.url}
 
 
@@ -304,10 +311,12 @@ def _norm_name(name: str) -> str:
     return "name:" + re.sub(r"[^a-z0-9]", "", (name or "").lower())
 
 
-async def _run_extraction(job: Job, url: str, fast: bool, max_pages: int | None):
+async def _run_extraction(job: Job, url: str, fast: bool, max_pages: int | None, start_page: int = 1):
     _job_ctx.set(job)
 
     _log(f"Target: {url}")
+    if start_page > 1:
+        _log(f"Collecting pages {start_page}" + (f" to {max_pages}" if max_pages else " onward"))
     if fast:
         _log("FAST MODE: Name, Website, Email, Phone, State")
     else:
@@ -322,7 +331,7 @@ async def _run_extraction(job: Job, url: str, fast: bool, max_pages: int | None)
 
             # Step 1: Collect companies from list pages
             _log("Step 1: Crawling directory pages...")
-            cards, chrome = await _pages_stage(fetcher, url, is_houzz, max_pages)
+            cards, chrome = await _pages_stage(fetcher, url, is_houzz, max_pages, start_page)
 
             if job.stop_event.is_set():
                 job.status = "stopped"
@@ -380,7 +389,7 @@ async def _run_extraction(job: Job, url: str, fast: bool, max_pages: int | None)
         _save_results(url)
 
 
-async def _pages_stage(fetcher, url, is_houzz, max_pages):
+async def _pages_stage(fetcher, url, is_houzz, max_pages, start_page=1):
     job = J()
     cards = []
     chrome = set()
@@ -421,10 +430,14 @@ async def _pages_stage(fetcher, url, is_houzz, max_pages):
             key = c["profile_url"] or ("name:" + (c.get("name") or "").lower())
             if key not in seen_keys:
                 seen_keys.add(key)
-                cards.append(c)
                 added += 1
+                if page_num >= start_page:
+                    cards.append(c)
 
-        _log(f"  Page {page_num}: {added} new companies (Total: {len(cards)})")
+        if page_num < start_page:
+            _log(f"  Page {page_num}: {added} companies found (skipped - before start page {start_page})")
+        else:
+            _log(f"  Page {page_num}: {added} new companies (Total: {len(cards)})")
         job.progress = min(15, 15 * page_num / max(max_pages or 10, 1))
 
         if max_pages and page_num >= max_pages:
@@ -439,20 +452,21 @@ async def _pages_stage(fetcher, url, is_houzz, max_pages):
             next_url, how = sd.find_next_page(html, page_url, len(page_cards))
 
         go_dynamic = False
+        resume_from = page_num
         if not is_houzz and page_cards:
             if page_num == 2 and added == 0:
                 go_dynamic, next_url = True, None
-                start_page = page_num
+                resume_from = page_num
             elif not next_url:
                 total = sd.total_hint(html)
                 if how == "js" or sd.has_load_more(html) or (total and total > len(cards)):
                     go_dynamic = True
-                    start_page = page_num + 1
+                    resume_from = page_num + 1
             _log(f"  Pagination: next_url={bool(next_url)}, how='{how}', go_dynamic={go_dynamic}")
 
         if go_dynamic:
             _log("  Next pages load by clicking/scrolling - continuing in the browser...")
-            pages = fetcher.iter_dynamic_pages(url, start_page=start_page)
+            pages = fetcher.iter_dynamic_pages(url, start_page=resume_from)
             stale = 0
             try:
                 async for num, dhtml in pages:
@@ -468,9 +482,13 @@ async def _pages_stage(fetcher, url, is_houzz, max_pages):
                         key = c["profile_url"] or ("name:" + (c.get("name") or "").lower())
                         if key not in seen_keys:
                             seen_keys.add(key)
-                            cards.append(c)
                             added += 1
-                    _log(f"  Page {num}: {added} new companies (Total: {len(cards)})")
+                            if num >= start_page:
+                                cards.append(c)
+                    if num < start_page:
+                        _log(f"  Page {num}: {added} companies found (skipped - before start page {start_page})")
+                    else:
+                        _log(f"  Page {num}: {added} new companies (Total: {len(cards)})")
                     job.progress = min(15, 15 * num / max(max_pages or 10, 1))
                     stale = stale + 1 if added == 0 else 0
                     if stale >= 3:
